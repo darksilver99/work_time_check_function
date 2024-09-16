@@ -1,71 +1,106 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * const {onCall} = require("firebase-functions/v2/https");
- * const {onDocumentWritten} = require("firebase-functions/v2/firestore");
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
-
-const { onRequest } = require("firebase-functions/v2/https");
-const logger = require("firebase-functions/logger");
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const REGION = "asia-east2";
+const request = require('request');
+const axios = require('axios');
+const formData = require("form-data");
+
+
+const REGION = "asia-east1";
+
 admin.initializeApp();
 const db = admin.firestore();
+const storage = admin.storage();
 
-// Create and deploy your first functions
-// https://firebase.google.com/docs/functions/get-started
+const line_token = "aTZa3bg8NRu34ZZBA5DhRkbSoeQ2u5ioNArB4pKvnTw";
 
-exports.helloWorld = onRequest((request, response) => {
-    logger.info("Hello logs!", { structuredData: true });
-    response.send("Hello from Firebase!");
-});
-
-exports.testFun = onRequest(async (request, response) => {
-
-    const currentDate = new Date();
-    // เช็คก่อนว่ามันมีมากกว่า 8 คนมั้ย
-    const rsCompany = await db.collection('company_list').where('status', '==', 1).get();
-    for (var i = 0; i < rsCompany.size; i++) {
-        const rsEmployee = await db.collection('employee_list').where('status', '==', 1).where('company_ref', '==', rsCompany.docs[i].ref).get();
-        console.log("rsEmployee.size : " + rsEmployee.size);
-        if (rsEmployee.size > 8) {
-            console.log(rsCompany.docs[i].data()["expire_date"].toDate());
-            console.log(currentDate);
-            if (currentDate >= rsCompany.docs[i].data()["expire_date"].toDate()) {
-                db.doc(rsCompany.docs[i].ref.path).update({
-                    "is_paid": false,
-                });
-            }
-        }
+function isEmpty(checkValue) {
+    if (checkValue === undefined || checkValue === null || checkValue === "" || checkValue + "" === "null") {
+        return true;
     }
+    return false;
+}
 
-    response.send("Hello from Firebase!");
-});
+exports.onWriteUsers = functions.firestore.document('users/{user_id}')
+    .onWrite(async (snap, context) => {
 
+        const before = snap.before.data();
+        const original = snap.after.data();
+        const user_id = context.params.user_id;
 
-exports.checkIsExpireSubscript = functions
-    .pubsub.schedule('0 23 * * *')
-    .timeZone('Asia/Bangkok')
-    .onRun(async (context) => {
-
-        const currentDate = new Date();
-        // เช็คก่อนว่ามันมีมากกว่า 8 คนมั้ย
-        const rsCompany = await db.collection('company_list').where('status', '==', 1).get();
-        for (var i = 0; i < rsCompany.size; i++) {
-            const rsEmployee = await db.collection('employee_list').where('status', '==', 1).where('company_ref', '==', rsCompany.docs[i].ref).get();
-            console.log("rsEmployee.size : " + rsEmployee.size);
-            if (rsEmployee.size > 8) {
-                console.log(rsCompany.docs[i].data()["expire_date"].toDate());
-                console.log(currentDate);
-                if (currentDate >= rsCompany.docs[i].data()["expire_date"].toDate()) {
-                    db.doc(rsCompany.docs[i].ref.path).update({
-                        "is_paid": false,
-                    });
-                }
-            }
+        if (isEmpty(before)) {
+            return;
         }
+
+        if (isEmpty(original)) {
+            return;
+        }
+
+        if (isEmpty(before.phone_number)) {
+            let message = "มีการสมัครสมาชิกใหม่จากคุณ ";
+            message = message + original.first_name + " " + original.last_name;
+            message = message + "\n" + "เบอร์โทร : " + original.phone_number;
+            message = message + "\n" + "อีเมล : " + original.email;
+            sendLineNotify(message, line_token);
+        }
+
+
 
     });
+
+exports.onCreateIssueList = functions.firestore.document('issue_list/{doc_id}')
+    .onCreate(async (snap, context) => {
+
+        const original = snap.data();
+        const doc_id = context.params.doc_id;
+
+        let message = "มีการแจ้งปัญหาการใช้งานจากคุณ ";
+        message = message + original.contact_name;
+        message = message + "\n" + "เบอร์โทร : " + original.contact_phone;
+        message = message + "\n" + "หัวข้อ : " + original.subject;
+        message = message + "\n" + "รายละเอียด : " + original.detail;
+        sendLineNotify(message, line_token);
+
+
+    });
+
+
+
+exports.onCreatePaymentList = functions.firestore.document('payment_list/{doc_id}')
+    .onCreate(async (snap, context) => {
+
+        const original = snap.data();
+        const doc_id = context.params.doc_id;
+
+        let message = "มีการแจ้งโอนเงินจาก ";
+        message = message + original.customer_name + "(" + original.customer_ref.id + ")";
+        message = message + "\n" + "รูปหลักฐานการโอนเงิน : ";
+        sendLineNotify(message, line_token, original.image_slip, original.image_slip);
+
+    });
+
+function sendLineNotify(message, token, image1, image2) {
+
+    // image1,2 is url path
+
+    const data = new formData();
+    data.append("message", message);
+
+    if (!isEmpty(image1) && !isEmpty(image2)) {
+        data.append("imageThumbnail", image1);
+        data.append("imageFullsize", image2);
+    }
+
+    const config = {
+        method: "post",
+        maxBodyLength: Infinity,
+        url: "https://notify-api.line.me/api/notify",
+        headers: {
+            "content-type": "application/json",
+            "Authorization": "Bearer " + token,
+            ...data.getHeaders(),
+        },
+        data: data,
+    };
+
+    axios.request(config);
+}
